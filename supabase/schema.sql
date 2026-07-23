@@ -108,6 +108,29 @@ create table if not exists public.tag_follows (
 );
 
 -- ---------------------------------------------------------------------------
+-- 6-1. album_follows — 앨범 단위 구독 (유저/태그 구독과 별개로, 특정 앨범 하나만 구독)
+-- ---------------------------------------------------------------------------
+create table if not exists public.album_follows (
+  user_id    uuid not null references public.profiles (id) on delete cascade,
+  album_id   uuid not null references public.albums (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (user_id, album_id)
+);
+
+-- ---------------------------------------------------------------------------
+-- 7. notifications — 팔로우/초대/구독한 앨범의 새 사진 등 개인 알림
+-- ---------------------------------------------------------------------------
+create table if not exists public.notifications (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references public.profiles (id) on delete cascade, -- 수신자
+  type       text not null check (type in ('new_follower', 'album_invite', 'new_photo')),
+  actor_id   uuid references public.profiles (id) on delete set null, -- 유발한 유저
+  album_id   uuid references public.albums (id) on delete cascade,
+  read_at    timestamptz,
+  created_at timestamptz not null default now()
+);
+
+-- ---------------------------------------------------------------------------
 -- 인덱스
 -- ---------------------------------------------------------------------------
 create index if not exists idx_albums_owner       on public.albums (owner_id);
@@ -119,6 +142,8 @@ create index if not exists idx_collab_user          on public.album_collaborator
 create index if not exists idx_album_labels_user     on public.album_member_labels (user_id);
 create index if not exists idx_follows_followee      on public.follows (followee_id);
 create index if not exists idx_tag_follows_tag       on public.tag_follows (tag);
+create index if not exists idx_album_follows_album   on public.album_follows (album_id);
+create index if not exists idx_notifications_user     on public.notifications (user_id, read_at, created_at desc);
 
 -- ---------------------------------------------------------------------------
 -- 함수 / 트리거
@@ -179,6 +204,87 @@ drop trigger if exists trg_album_labels_touch on public.album_member_labels;
 create trigger trg_album_labels_touch
   before update on public.album_member_labels
   for each row execute function public.touch_updated_at();
+
+-- ---- 알림 트리거 ----
+-- security definer 로 만드는 이유: 트리거를 유발한 유저(예: 팔로우한 사람)의 권한으로는
+-- '수신자'의 notifications 행에 insert 할 수 없다(RLS 상 본인 것만 insert 가능해야 하므로).
+-- 그래서 postgres 소유의 SECURITY DEFINER 함수로 RLS 를 우회해 대신 넣어준다.
+
+-- 1) 누가 나를 팔로우하면 알림
+create or replace function public.notify_new_follower()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  insert into public.notifications (user_id, type, actor_id)
+  values (new.followee_id, 'new_follower', new.follower_id);
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_notify_new_follower on public.follows;
+create trigger trg_notify_new_follower
+  after insert on public.follows
+  for each row execute function public.notify_new_follower();
+
+-- 2) 앨범 공동작업자로 초대되면 알림
+create or replace function public.notify_album_invite()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  insert into public.notifications (user_id, type, actor_id, album_id)
+  values (new.user_id, 'album_invite', new.invited_by, new.album_id);
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_notify_album_invite on public.album_collaborators;
+create trigger trg_notify_album_invite
+  after insert on public.album_collaborators
+  for each row execute function public.notify_album_invite();
+
+-- 3) 구독 중인 앨범/유저/태그에 새 사진이 올라오면 알림
+--   비공개 앨범은 굳이 새지 않도록, 공개 앨범일 때만 알린다.
+--   (앨범/유저/태그 여러 조건에 동시에 걸려도 유저당 알림 1개만 가도록 distinct 처리)
+create or replace function public.notify_new_photo()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_owner_id uuid;
+  v_is_private boolean;
+  v_tags text[];
+begin
+  select owner_id, is_private, tags into v_owner_id, v_is_private, v_tags
+  from public.albums where id = new.album_id;
+
+  if v_is_private then
+    return new;
+  end if;
+
+  insert into public.notifications (user_id, type, actor_id, album_id)
+  select distinct recipient, 'new_photo', new.uploader_id, new.album_id
+  from (
+    select user_id as recipient from public.album_follows where album_id = new.album_id
+    union
+    select follower_id as recipient from public.follows where followee_id = v_owner_id
+    union
+    select user_id as recipient from public.tag_follows where tag = any(v_tags)
+  ) recipients
+  where recipient <> new.uploader_id;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_notify_new_photo on public.photos;
+create trigger trg_notify_new_photo
+  after insert on public.photos
+  for each row execute function public.notify_new_photo();
 
 -- 앨범 접근 권한 헬퍼: 현재 유저가 해당 앨범을 볼 수 있는가?
 --   공개 앨범이거나, 소유자거나, 공동작업자이면 true
@@ -248,6 +354,8 @@ alter table public.album_collaborators enable row level security;
 alter table public.album_member_labels enable row level security;
 alter table public.follows             enable row level security;
 alter table public.tag_follows         enable row level security;
+alter table public.album_follows       enable row level security;
+alter table public.notifications       enable row level security;
 
 -- ---- profiles: 계정은 공개. 본인만 수정 ----
 drop policy if exists profiles_select on public.profiles;
@@ -379,6 +487,34 @@ create policy tag_follows_insert on public.tag_follows
 
 drop policy if exists tag_follows_delete on public.tag_follows;
 create policy tag_follows_delete on public.tag_follows
+  for delete using (user_id = auth.uid());
+
+-- ---- album_follows: 볼 수 있는 앨범만 구독 가능 ----
+drop policy if exists album_follows_select on public.album_follows;
+create policy album_follows_select on public.album_follows
+  for select using (true);
+
+drop policy if exists album_follows_insert on public.album_follows;
+create policy album_follows_insert on public.album_follows
+  for insert with check (
+    user_id = auth.uid() and public.can_view_album(album_id)
+  );
+
+drop policy if exists album_follows_delete on public.album_follows;
+create policy album_follows_delete on public.album_follows
+  for delete using (user_id = auth.uid());
+
+-- ---- notifications: 본인 것만 보고/읽음처리/삭제. insert 는 트리거(SECURITY DEFINER)만 ----
+drop policy if exists notifications_select on public.notifications;
+create policy notifications_select on public.notifications
+  for select using (user_id = auth.uid());
+
+drop policy if exists notifications_update on public.notifications;
+create policy notifications_update on public.notifications
+  for update using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+drop policy if exists notifications_delete on public.notifications;
+create policy notifications_delete on public.notifications
   for delete using (user_id = auth.uid());
 
 -- ============================================================================

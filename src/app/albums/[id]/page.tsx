@@ -7,6 +7,7 @@ import { PhotoGrid } from '@/components/PhotoGrid';
 import { CollaboratorPanel } from '@/components/CollaboratorPanel';
 import { AlbumActions } from '@/components/AlbumActions';
 import { AlbumLabelEditor } from '@/components/AlbumLabelEditor';
+import { AlbumFollowButton } from '@/components/AlbumFollowButton';
 import { BackButton } from '@/components/BackButton';
 import type { Photo, Profile } from '@/lib/types';
 
@@ -40,9 +41,9 @@ export default async function AlbumDetailPage({
     notFound();
   }
 
-  // 소유자/사진/공동작업자 조회는 서로 의존관계가 없으므로 병렬로 보낸다
+  // 소유자/사진/공동작업자/구독여부 조회는 서로 의존관계가 없으므로 병렬로 보낸다
   // (순차로 하면 쿼리 수만큼 네트워크 왕복시간이 그대로 누적된다).
-  const [{ data: owner }, { data: photos }, { data: collabRows }] =
+  const [{ data: owner }, { data: photos }, { data: collabRows }, isFollowingAlbum] =
     await Promise.all([
       supabase
         .from('profiles')
@@ -63,6 +64,16 @@ export default async function AlbumDetailPage({
         .from('album_collaborators')
         .select('user_id, created_at, profiles:user_id (id, username, display_name, avatar_url)')
         .eq('album_id', album.id),
+      // 앨범 단위 구독 여부
+      user
+        ? supabase
+            .from('album_follows')
+            .select('album_id')
+            .eq('user_id', user.id)
+            .eq('album_id', id)
+            .maybeSingle()
+            .then((r) => !!r.data)
+        : Promise.resolve(false),
     ]);
 
   const collaborators =
@@ -156,6 +167,12 @@ export default async function AlbumDetailPage({
           </div>
 
           <div className="flex shrink-0 gap-2">
+            {!isOwner && (
+              <AlbumFollowButton
+                albumId={album.id}
+                initialFollowing={isFollowingAlbum}
+              />
+            )}
             {canEdit && (
               <AlbumLabelEditor
                 albumId={album.id}

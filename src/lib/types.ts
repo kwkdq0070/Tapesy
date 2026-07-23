@@ -64,6 +64,24 @@ export type TagFollow = {
   created_at: string;
 };
 
+export type AlbumFollow = {
+  user_id: string;
+  album_id: string;
+  created_at: string;
+};
+
+export type NotificationType = 'new_follower' | 'album_invite' | 'new_photo';
+
+export type Notification = {
+  id: string;
+  user_id: string;
+  type: NotificationType;
+  actor_id: string | null;
+  album_id: string | null;
+  read_at: string | null;
+  created_at: string;
+};
+
 // 조회 시 조인해서 쓰는 뷰 타입
 export type AlbumWithOwner = Album & {
   owner: Pick<Profile, 'id' | 'username' | 'display_name' | 'avatar_url'>;

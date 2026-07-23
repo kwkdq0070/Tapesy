@@ -1,23 +1,64 @@
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
-import { decorateAlbums, fetchAlbumPage, type AlbumFilter } from '@/lib/queries';
+import {
+  decorateAlbums,
+  fetchAlbumPage,
+  searchAlbums,
+  type AlbumFilter,
+} from '@/lib/queries';
 import { LoadMoreAlbums } from '@/components/LoadMoreAlbums';
+import { AlbumCard } from '@/components/AlbumCard';
 import { TagFollowButton } from '@/components/TagFollowButton';
 import { TagSearchBox } from '@/components/TagSearchBox';
 
 export default async function ExplorePage({
   searchParams,
 }: {
-  searchParams: Promise<{ tag?: string; feed?: string }>;
+  searchParams: Promise<{ tag?: string; feed?: string; q?: string }>;
 }) {
-  const { tag: rawTag, feed: rawFeed } = await searchParams;
+  const { tag: rawTag, feed: rawFeed, q: rawQuery } = await searchParams;
   const tag = rawTag?.trim().replace(/^#/, '').toLowerCase() || '';
+  const query = rawQuery?.trim() || '';
   const feedMode = rawFeed === 'following' ? 'following' : 'all';
   const supabase = await createClient();
 
   const {
     data: { user },
   } = await supabase.auth.getUser();
+
+  // 검색어(q)가 있으면 제목/유저 아이디·닉네임/태그를 아우르는 통합 검색 결과만 보여준다.
+  if (query) {
+    const results = await searchAlbums(supabase, query);
+    const decorated = await decorateAlbums(supabase, results);
+
+    return (
+      <main>
+        <h1 className="mb-1 text-2xl font-bold text-tape-ink">탐색</h1>
+        <p className="mb-5 text-sm text-tape-muted">
+          태그, 유저 아이디·닉네임, 앨범 이름으로 검색해 보세요.
+        </p>
+
+        <TagSearchBox initial={query} />
+
+        <div className="mt-6">
+          <p className="mb-4 text-sm text-tape-muted">
+            &apos;{query}&apos; 검색 결과 {decorated.length}개
+          </p>
+          {decorated.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-black/10 py-16 text-center text-sm text-tape-muted">
+              일치하는 앨범이 없어요.
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+              {decorated.map((a) => (
+                <AlbumCard key={a.id} album={a} />
+              ))}
+            </div>
+          )}
+        </div>
+      </main>
+    );
+  }
 
   // 태그 검색 중이면 항상 전체 공개 검색(발견 모드), 아니면 전체/팔로잉 토글을 따른다.
   let filter: AlbumFilter = { type: 'public' };
@@ -26,14 +67,21 @@ export default async function ExplorePage({
   if (tag) {
     filter = { type: 'tag', tag };
   } else if (feedMode === 'following' && user) {
-    const [{ data: follows }, { data: tagFollows }] = await Promise.all([
-      supabase.from('follows').select('followee_id').eq('follower_id', user.id),
-      supabase.from('tag_follows').select('tag').eq('user_id', user.id),
-    ]);
+    const [{ data: follows }, { data: tagFollows }, { data: albumFollows }] =
+      await Promise.all([
+        supabase.from('follows').select('followee_id').eq('follower_id', user.id),
+        supabase.from('tag_follows').select('tag').eq('user_id', user.id),
+        supabase.from('album_follows').select('album_id').eq('user_id', user.id),
+      ]);
     const followedIds = (follows ?? []).map((f) => f.followee_id);
     const followedTags = (tagFollows ?? []).map((t) => t.tag);
-    hasSubscriptions = followedIds.length > 0 || followedTags.length > 0;
-    if (hasSubscriptions) filter = { type: 'feed', followedIds, followedTags };
+    const followedAlbumIds = (albumFollows ?? []).map((a) => a.album_id);
+    hasSubscriptions =
+      followedIds.length > 0 ||
+      followedTags.length > 0 ||
+      followedAlbumIds.length > 0;
+    if (hasSubscriptions)
+      filter = { type: 'feed', followedIds, followedTags, followedAlbumIds };
   }
 
   // "팔로잉" 탭인데 구독이 하나도 없으면, 헷갈리지 않게 전체 공개 결과로 몰래 대체하지 않고
@@ -81,7 +129,7 @@ export default async function ExplorePage({
     <main>
       <h1 className="mb-1 text-2xl font-bold text-tape-ink">탐색</h1>
       <p className="mb-5 text-sm text-tape-muted">
-        태그를 검색하거나, 구독한 유저·태그의 최신 앨범을 모아보세요.
+        태그, 유저 아이디·닉네임, 앨범 이름으로 검색해 보세요.
       </p>
 
       <TagSearchBox initial={tag} />
@@ -145,7 +193,7 @@ export default async function ExplorePage({
           <div className="rounded-2xl border border-dashed border-black/10 bg-white p-10 text-center">
             <p className="text-tape-ink">아직 구독한 유저나 태그가 없어요.</p>
             <p className="mt-1 text-sm text-tape-muted">
-              유저를 팔로우하거나 태그를 구독하면 여기 모아볼 수 있어요.
+              유저를 팔로우하거나 태그·앨범을 구독하면 여기 모아볼 수 있어요.
             </p>
             <Link
               href="/explore"

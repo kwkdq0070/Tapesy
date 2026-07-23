@@ -9,9 +9,18 @@ export function TagSearchBox({ initial }: { initial: string }) {
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    const q = value.trim().replace(/^#/, '').toLowerCase();
-    if (q) router.push(`/explore?tag=${encodeURIComponent(q)}`);
-    else router.push('/explore');
+    const trimmed = value.trim();
+    if (!trimmed) {
+      router.push('/explore');
+      return;
+    }
+    // '#'로 시작하면 그 태그 하나만 정확히 보는 모드(구독 버튼 포함),
+    // 그 외엔 태그/유저 아이디·닉네임/앨범 제목을 아우르는 통합 검색.
+    if (trimmed.startsWith('#')) {
+      router.push(`/explore?tag=${encodeURIComponent(trimmed.slice(1).toLowerCase())}`);
+    } else {
+      router.push(`/explore?q=${encodeURIComponent(trimmed)}`);
+    }
   }
 
   return (
@@ -21,7 +30,7 @@ export function TagSearchBox({ initial }: { initial: string }) {
         <input
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          placeholder="태그로 검색 (예: 여행, 필름, 카페)"
+          placeholder="태그, 유저, 앨범 이름으로 검색 (예: #카페, @user, 우리집)"
           className="flex-1 bg-transparent text-sm outline-none"
         />
       </div>

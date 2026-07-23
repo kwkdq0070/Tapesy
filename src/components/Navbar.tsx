@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { NotificationBell } from './NotificationBell';
 import type { Profile } from '@/lib/types';
 
 type NavProfile = Pick<
@@ -6,7 +7,13 @@ type NavProfile = Pick<
   'id' | 'username' | 'display_name' | 'avatar_url'
 > | null;
 
-export function Navbar({ profile }: { profile: NavProfile }) {
+export function Navbar({
+  profile,
+  unreadCount,
+}: {
+  profile: NavProfile;
+  unreadCount: number;
+}) {
   return (
     <header className="sticky top-0 z-40 border-b border-black/5 bg-tape-bg/90 backdrop-blur">
       <nav className="mx-auto flex max-w-5xl items-center justify-between px-4 py-4">
@@ -15,7 +22,8 @@ export function Navbar({ profile }: { profile: NavProfile }) {
         </Link>
 
         {profile ? (
-          <div className="flex items-center gap-3 text-sm">
+          <div className="flex items-center gap-2 text-sm">
+            <NotificationBell unreadCount={unreadCount} />
             <span className="text-tape-ink">
               <b className="font-semibold">
                 {profile.display_name ?? profile.username}

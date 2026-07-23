@@ -14,7 +14,12 @@ export const ALBUM_PAGE_SIZE = 12;
 export type AlbumFilter =
   | { type: 'public' }
   | { type: 'tag'; tag: string }
-  | { type: 'feed'; followedIds: string[]; followedTags: string[] };
+  | {
+      type: 'feed';
+      followedIds: string[];
+      followedTags: string[];
+      followedAlbumIds?: string[];
+    };
 
 function albumsBaseQuery(supabase: SupabaseClient, filter: AlbumFilter) {
   const q = supabase.from('albums').select(ALBUM_COLUMNS);
@@ -29,6 +34,8 @@ function albumsBaseQuery(supabase: SupabaseClient, filter: AlbumFilter) {
         orParts.push(`owner_id.in.(${filter.followedIds.join(',')})`);
       if (filter.followedTags.length)
         orParts.push(`tags.ov.{${filter.followedTags.join(',')}}`);
+      if (filter.followedAlbumIds?.length)
+        orParts.push(`id.in.(${filter.followedAlbumIds.join(',')})`);
       return q.eq('is_private', false).or(orParts.join(','));
     }
   }
@@ -50,6 +57,56 @@ export async function fetchAlbumPage(
   const rows = (data as Album[]) ?? [];
   const hasMore = rows.length > ALBUM_PAGE_SIZE;
   return { page: hasMore ? rows.slice(0, ALBUM_PAGE_SIZE) : rows, hasMore };
+}
+
+// 앨범 제목 / 태그 / 소유자의 아이디·닉네임 으로 통합 검색한다.
+// PostgREST 의 .or() 는 값을 직접 문자열로 조립해야 해서 사용자 입력(쉼표, 괄호 등)이
+// 섞이면 필터 구문이 깨질 수 있다. 그래서 .or() 대신 개별 쿼리 여러 개를 병렬로 보내고
+// 결과를 앱 코드에서 합쳐 중복 제거하는 방식으로 그 위험을 피한다.
+export async function searchAlbums(
+  supabase: SupabaseClient,
+  query: string,
+  limit = 30
+): Promise<Album[]> {
+  const like = `%${query}%`;
+
+  const [{ data: byTitle }, { data: byUsername }, { data: byDisplayName }] =
+    await Promise.all([
+      supabase
+        .from('albums')
+        .select(ALBUM_COLUMNS)
+        .eq('is_private', false)
+        .ilike('title', like)
+        .order('created_at', { ascending: false })
+        .limit(limit),
+      supabase.from('profiles').select('id').ilike('username', like),
+      supabase.from('profiles').select('id').ilike('display_name', like),
+    ]);
+
+  const ownerIds = Array.from(
+    new Set([
+      ...(byUsername ?? []).map((p) => p.id),
+      ...(byDisplayName ?? []).map((p) => p.id),
+    ])
+  );
+
+  const { data: byOwner } = ownerIds.length
+    ? await supabase
+        .from('albums')
+        .select(ALBUM_COLUMNS)
+        .eq('is_private', false)
+        .in('owner_id', ownerIds)
+        .order('created_at', { ascending: false })
+        .limit(limit)
+    : { data: [] as Album[] };
+
+  const merged = new Map<string, Album>();
+  for (const a of [...((byTitle as Album[]) ?? []), ...((byOwner as Album[]) ?? [])]) {
+    merged.set(a.id, a);
+  }
+  return Array.from(merged.values())
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .slice(0, limit);
 }
 
 // 앨범 행 목록을 받아 소유자/커버/사진수를 배치로 채워 AlbumWithOwner[] 로 만든다.

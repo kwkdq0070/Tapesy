@@ -21,19 +21,28 @@ export default async function RootLayout({
   } = await supabase.auth.getUser();
 
   let profile = null;
+  let unreadCount = 0;
   if (user) {
-    const { data } = await supabase
-      .from('profiles')
-      .select('id, username, display_name, avatar_url')
-      .eq('id', user.id)
-      .maybeSingle();
+    const [{ data }, { count }] = await Promise.all([
+      supabase
+        .from('profiles')
+        .select('id, username, display_name, avatar_url')
+        .eq('id', user.id)
+        .maybeSingle(),
+      supabase
+        .from('notifications')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .is('read_at', null),
+    ]);
     profile = data;
+    unreadCount = count ?? 0;
   }
 
   return (
     <html lang="ko">
       <body className="font-sans antialiased">
-        <Navbar profile={profile} />
+        <Navbar profile={profile} unreadCount={unreadCount} />
         <div className="mx-auto max-w-5xl px-4 pb-24 pt-6">{children}</div>
         <BottomNav username={profile?.username ?? null} />
       </body>
