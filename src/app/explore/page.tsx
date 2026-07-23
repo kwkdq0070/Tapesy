@@ -41,32 +41,31 @@ export default async function ExplorePage({
   const showFollowingEmpty =
     feedMode === 'following' && !tag && user && !hasSubscriptions;
 
-  const { page, hasMore } = showFollowingEmpty
-    ? { page: [], hasMore: false }
-    : await fetchAlbumPage(supabase, filter);
+  // 아래 세 조회는 서로 의존관계가 없으므로 병렬로 보낸다.
+  const [{ page, hasMore }, totalCount, tagFollowing] = await Promise.all([
+    showFollowingEmpty
+      ? Promise.resolve({ page: [], hasMore: false })
+      : fetchAlbumPage(supabase, filter),
+    // 태그일 때는 실제 전체 개수를 별도로 센다 (페이지 길이와 다를 수 있어서).
+    tag
+      ? supabase
+          .from('albums')
+          .select('*', { count: 'exact', head: true })
+          .contains('tags', [tag])
+          .then((r) => r.count ?? 0)
+      : Promise.resolve(null),
+    // 태그 구독 여부
+    user && tag
+      ? supabase
+          .from('tag_follows')
+          .select('tag')
+          .eq('user_id', user.id)
+          .eq('tag', tag)
+          .maybeSingle()
+          .then((r) => !!r.data)
+      : Promise.resolve(false),
+  ]);
   const decorated = await decorateAlbums(supabase, page);
-
-  // 태그일 때는 실제 전체 개수를 별도로 센다 (페이지 길이와 다를 수 있어서).
-  let totalCount: number | null = null;
-  if (tag) {
-    const { count } = await supabase
-      .from('albums')
-      .select('*', { count: 'exact', head: true })
-      .contains('tags', [tag]);
-    totalCount = count ?? 0;
-  }
-
-  // 태그 구독 여부
-  let tagFollowing = false;
-  if (user && tag) {
-    const { data } = await supabase
-      .from('tag_follows')
-      .select('tag')
-      .eq('user_id', user.id)
-      .eq('tag', tag)
-      .maybeSingle();
-    tagFollowing = !!data;
-  }
 
   // 인기 태그: 현재 페이지 기준 태그 빈도 집계 (간단 버전)
   const tagCounts = new Map<string, number>();

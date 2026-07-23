@@ -54,36 +54,35 @@ export default async function HomePage() {
   // 로그인: 홈 = 내 앨범(라이브러리).
   //   구독 피드는 팔로우가 0명인 신규 유저에게는 항상 비어 보이는 화면이라,
   //   홈 자리는 "내가 만든 것"으로 채우고 구독 피드는 /explore 의 팔로잉 토글로 옮겼다.
-  const [{ data: publicRows }, { data: privateRows }] = await Promise.all([
-    supabase
-      .from('albums')
-      .select(
-        'id, owner_id, title, description, tags, is_private, cover_photo_id, created_at, updated_at'
-      )
-      .eq('owner_id', user.id)
-      .eq('is_private', false)
-      .order('created_at', { ascending: false }),
-    supabase
-      .from('albums')
-      .select(
-        'id, owner_id, title, description, tags, is_private, cover_photo_id, created_at, updated_at'
-      )
-      .eq('owner_id', user.id)
-      .eq('is_private', true)
-      .order('created_at', { ascending: false }),
-  ]);
+  // 공유받은 앨범(내가 소유자는 아니지만 공동작업자로 초대된 것) 조회용 collabRows 는
+  // publicRows/privateRows 와 서로 의존관계가 없으므로 한 번에 병렬로 보낸다.
+  const [{ data: publicRows }, { data: privateRows }, { data: collabRows }] =
+    await Promise.all([
+      supabase
+        .from('albums')
+        .select(
+          'id, owner_id, title, description, tags, is_private, cover_photo_id, created_at, updated_at'
+        )
+        .eq('owner_id', user.id)
+        .eq('is_private', false)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('albums')
+        .select(
+          'id, owner_id, title, description, tags, is_private, cover_photo_id, created_at, updated_at'
+        )
+        .eq('owner_id', user.id)
+        .eq('is_private', true)
+        .order('created_at', { ascending: false }),
+      supabase.from('album_collaborators').select('album_id').eq('user_id', user.id),
+    ]);
 
   const [publicAlbums, privateAlbums] = await Promise.all([
     decorateAlbums(supabase, (publicRows as Album[]) ?? [], user.id),
     decorateAlbums(supabase, (privateRows as Album[]) ?? [], user.id),
   ]);
 
-  // 공유받은 앨범(내가 소유자는 아니지만 공동작업자로 초대된 것) —
   // 초대받은 앨범을 발견할 수 있는 유일한 목록이라, 여기서도 내 별칭이 보이게 한다.
-  const { data: collabRows } = await supabase
-    .from('album_collaborators')
-    .select('album_id')
-    .eq('user_id', user.id);
   const collabAlbumIds = (collabRows ?? []).map((c) => c.album_id);
 
   let sharedAlbums: Awaited<ReturnType<typeof decorateAlbums>> = [];

@@ -15,15 +15,20 @@ export default async function ProfilePage({
   const { username } = await params;
   const supabase = await createClient();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('id, username, display_name, avatar_url, bio, created_at')
-    .eq('username', username.toLowerCase())
-    .maybeSingle();
+  // 세션 확인과 프로필 조회는 서로 의존관계가 없으니 병렬로.
+  const [
+    {
+      data: { user },
+    },
+    { data: profile },
+  ] = await Promise.all([
+    supabase.auth.getUser(),
+    supabase
+      .from('profiles')
+      .select('id, username, display_name, avatar_url, bio, created_at')
+      .eq('username', username.toLowerCase())
+      .maybeSingle(),
+  ]);
 
   if (!profile) {
     notFound();
@@ -31,46 +36,32 @@ export default async function ProfilePage({
 
   const isSelf = !!user && user.id === profile.id;
 
-  // 공개 앨범
-  const { data: publicRows } = await supabase
-    .from('albums')
-    .select(
-      'id, owner_id, title, description, tags, is_private, cover_photo_id, created_at, updated_at'
-    )
-    .eq('owner_id', profile.id)
-    .eq('is_private', false)
-    .order('created_at', { ascending: false });
-
-  // 비공개 앨범 — RLS 가 접근 가능한 것만 반환한다(본인 것/공동작업 중인 것).
-  const { data: privateRows } = await supabase
-    .from('albums')
-    .select(
-      'id, owner_id, title, description, tags, is_private, cover_photo_id, created_at, updated_at'
-    )
-    .eq('owner_id', profile.id)
-    .eq('is_private', true)
-    .order('created_at', { ascending: false });
-
-  const [publicAlbums, privateAlbums] = await Promise.all([
-    decorateAlbums(supabase, (publicRows as Album[]) ?? []),
-    decorateAlbums(supabase, (privateRows as Album[]) ?? []),
-  ]);
-
-  const canSeePrivate = isSelf || privateAlbums.length > 0;
-
-  // 팔로우 상태 & 카운트
-  let initialFollowing = false;
-  if (user && !isSelf) {
-    const { data: rel } = await supabase
-      .from('follows')
-      .select('follower_id')
-      .eq('follower_id', user.id)
-      .eq('followee_id', profile.id)
-      .maybeSingle();
-    initialFollowing = !!rel;
-  }
-
-  const [{ count: followers }, { count: following }] = await Promise.all([
+  // 아래는 전부 profile.id(+user.id) 만 있으면 되고 서로 의존관계가 없으므로 한 번에 병렬로.
+  const [
+    { data: publicRows },
+    { data: privateRows },
+    { count: followers },
+    { count: following },
+    initialFollowing,
+  ] = await Promise.all([
+    // 공개 앨범
+    supabase
+      .from('albums')
+      .select(
+        'id, owner_id, title, description, tags, is_private, cover_photo_id, created_at, updated_at'
+      )
+      .eq('owner_id', profile.id)
+      .eq('is_private', false)
+      .order('created_at', { ascending: false }),
+    // 비공개 앨범 — RLS 가 접근 가능한 것만 반환한다(본인 것/공동작업 중인 것).
+    supabase
+      .from('albums')
+      .select(
+        'id, owner_id, title, description, tags, is_private, cover_photo_id, created_at, updated_at'
+      )
+      .eq('owner_id', profile.id)
+      .eq('is_private', true)
+      .order('created_at', { ascending: false }),
     supabase
       .from('follows')
       .select('*', { count: 'exact', head: true })
@@ -79,7 +70,24 @@ export default async function ProfilePage({
       .from('follows')
       .select('*', { count: 'exact', head: true })
       .eq('follower_id', profile.id),
+    // 팔로우 상태
+    user && !isSelf
+      ? supabase
+          .from('follows')
+          .select('follower_id')
+          .eq('follower_id', user.id)
+          .eq('followee_id', profile.id)
+          .maybeSingle()
+          .then((r) => !!r.data)
+      : Promise.resolve(false),
   ]);
+
+  const [publicAlbums, privateAlbums] = await Promise.all([
+    decorateAlbums(supabase, (publicRows as Album[]) ?? []),
+    decorateAlbums(supabase, (privateRows as Album[]) ?? []),
+  ]);
+
+  const canSeePrivate = isSelf || privateAlbums.length > 0;
 
   return (
     <main>

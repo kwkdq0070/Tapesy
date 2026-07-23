@@ -18,44 +18,52 @@ export default async function AlbumDetailPage({
   const { id } = await params;
   const supabase = await createClient();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  // RLS 로 인해 볼 수 없는 앨범이면 결과가 없다 → notFound
-  const { data: album } = await supabase
-    .from('albums')
-    .select(
-      'id, owner_id, title, description, tags, is_private, cover_photo_id, created_at, updated_at'
-    )
-    .eq('id', id)
-    .maybeSingle();
+  // 세션 확인과 앨범 조회는 서로 의존관계가 없으니 병렬로.
+  const [
+    {
+      data: { user },
+    },
+    { data: album },
+  ] = await Promise.all([
+    supabase.auth.getUser(),
+    // RLS 로 인해 볼 수 없는 앨범이면 결과가 없다 → notFound
+    supabase
+      .from('albums')
+      .select(
+        'id, owner_id, title, description, tags, is_private, cover_photo_id, created_at, updated_at'
+      )
+      .eq('id', id)
+      .maybeSingle(),
+  ]);
 
   if (!album) {
     notFound();
   }
 
-  const { data: owner } = await supabase
-    .from('profiles')
-    .select('id, username, display_name, avatar_url')
-    .eq('id', album.owner_id)
-    .maybeSingle();
-
-  // 고정된 사진을 먼저(고정한 시점 최신순), 그다음 나머지를 업로드 최신순으로.
-  const { data: photos } = await supabase
-    .from('photos')
-    .select(
-      'id, album_id, uploader_id, storage_path, caption, width, height, pinned_at, created_at'
-    )
-    .eq('album_id', album.id)
-    .order('pinned_at', { ascending: false, nullsFirst: false })
-    .order('created_at', { ascending: false });
-
-  // 공동작업자 목록 (조인)
-  const { data: collabRows } = await supabase
-    .from('album_collaborators')
-    .select('user_id, created_at, profiles:user_id (id, username, display_name, avatar_url)')
-    .eq('album_id', album.id);
+  // 소유자/사진/공동작업자 조회는 서로 의존관계가 없으므로 병렬로 보낸다
+  // (순차로 하면 쿼리 수만큼 네트워크 왕복시간이 그대로 누적된다).
+  const [{ data: owner }, { data: photos }, { data: collabRows }] =
+    await Promise.all([
+      supabase
+        .from('profiles')
+        .select('id, username, display_name, avatar_url')
+        .eq('id', album.owner_id)
+        .maybeSingle(),
+      // 고정된 사진을 먼저(고정한 시점 최신순), 그다음 나머지를 업로드 최신순으로.
+      supabase
+        .from('photos')
+        .select(
+          'id, album_id, uploader_id, storage_path, caption, width, height, pinned_at, created_at'
+        )
+        .eq('album_id', album.id)
+        .order('pinned_at', { ascending: false, nullsFirst: false })
+        .order('created_at', { ascending: false }),
+      // 공동작업자 목록 (조인)
+      supabase
+        .from('album_collaborators')
+        .select('user_id, created_at, profiles:user_id (id, username, display_name, avatar_url)')
+        .eq('album_id', album.id),
+    ]);
 
   const collaborators =
     collabRows?.map((r) => ({
