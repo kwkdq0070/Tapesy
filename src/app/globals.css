@@ -11,6 +11,14 @@ body {
   color: theme('colors.tape.ink');
 }
 
+/* 터치 시 반응 없는 것처럼 느껴지지 않도록, 눌리는 순간 즉시 눈에 보이는 피드백을 준다.
+   :active 는 터치다운 즉시 발동해서 네트워크 지연과 무관하게 바로 보인다. */
+button:not(:disabled):active,
+a:active {
+  transform: scale(0.97);
+  opacity: 0.85;
+}
+
 /* 스크롤바 살짝 다듬기 */
 ::-webkit-scrollbar {
   width: 10px;
